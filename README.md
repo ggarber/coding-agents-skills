@@ -50,15 +50,18 @@ GitHub can't reach a laptop directly, but the official [`gh webhook`](https://do
 
 ```bash
 gh extension install cli/gh-webhook
-gh auth refresh -s admin:repo_hook     # the forwarder creates a temporary repo webhook
 ```
 
-Notes:
-- You need admin rights on the repo (or org owner rights for org-wide hooks).
-- GitHub allows one active forwarder per repo, so run one watcher per repo at a time.
-- The forwarder is meant for development. If it drops, the watcher keeps polling and retries the forward every minute.
+The skill installs it itself when the agent is allowed to.
 
-Without the extension, the watcher polls every 15 s with conditional requests (`If-None-Match` + ETag). An unchanged answer is a `304 Not Modified`, which [doesn't count against the rate limit](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate), so even fast polling costs almost nothing. The webhook only works as a doorbell that triggers a check right away, so both paths report the same events, once each.
+Notes:
+- The forwarder creates a temporary webhook on the repo, so you need admin rights on it. The default `gh auth login` token is enough for your own repos; if creating the hook fails with 403/404, run `gh auth refresh -s admin:repo_hook`.
+- GitHub allows one active forwarder per repo, so run one watcher per repo at a time.
+- Stop the watcher with Ctrl-C / SIGTERM so it removes the hook. After a hard kill, the next start logs `Hook already exists` and retries until GitHub drops the old one.
+- The forwarder is meant for development. If it drops, the watcher keeps polling and retries the forward.
+- Measured: a new issue or comment reaches the watcher in about 2 s, with the poll interval set to 5 minutes.
+
+Without the extension, the watcher polls every 15 s with conditional requests (`If-None-Match` + ETag). An unchanged answer is a `304 Not Modified`, which [doesn't count against the rate limit](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate), so even fast polling costs almost nothing. Webhook deliveries are reported straight from their payload, and the poll catches anything they missed. Both paths share one record of what was reported, so each event is printed once.
 
 ### Running the watcher by hand
 

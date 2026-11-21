@@ -3,11 +3,11 @@
 
 Two ways to learn about changes, used together:
   - push: `gh webhook forward` (the cli/gh-webhook extension) relays the repo's webhooks to a
-    local port, and each delivery triggers an immediate check (about 1-2 s latency).
+    local port, and each delivery is reported straight from its payload (1-2 s latency).
   - poll: conditional requests (ETag / If-None-Match). An unchanged answer is a 304, which
-    does not count against GitHub's rate limit, so polling every few seconds is cheap.
-Webhooks are only a doorbell; the poll is the single source of truth, so nothing is printed twice
-and nothing is missed while the forwarder is down.
+    does not count against GitHub's rate limit, so polling every few seconds is cheap. It
+    catches anything the webhooks missed (forwarder down, events from before the start).
+Both paths share one record of what was reported, so nothing is printed twice.
 
 Output lines (stdout, one per event):
   NEW_ISSUE #N [state] by USER: TITLE
@@ -19,7 +19,9 @@ Status and errors go to stderr.
 import argparse
 import json
 import os
+import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -129,80 +131,140 @@ class Watcher:
         if self.react:
             gh("api", "-X", "POST", f"repos/{self.repo}/{endpoint}/reactions", "-f", "content=eyes")
 
+    # Webhook payloads and polled API objects share these shapes, so both paths report through them.
+    # State is saved right after each line, so a restart never reports the same event twice.
+
+    def issue(self, i):
+        if "pull_request" in i or not self.state.is_new(f"issue:{i['number']}"):
+            return
+        emit(f"NEW_ISSUE #{i['number']} [{i['state']}] by {i['user']['login']}: {one_line(i['title'])}")
+        self.state.save()
+        self.eyes(f"issues/{i['number']}")
+
+    def comment(self, c, state=None):
+        if self.marker in (c.get("body") or "") or not self.state.is_new(f"comment:{c['id']}"):
+            return
+        num = c["issue_url"].rsplit("/", 1)[-1]
+        if state is None:
+            state = gh("api", f"repos/{self.repo}/issues/{num}", "--jq", ".state").stdout.strip() or "?"
+        emit(f"NEW_COMMENT #{num} [{state}] by {c['user']['login']} (id {c['id']}): {one_line(c['body'])}")
+        self.state.save()
+        self.eyes(f"issues/comments/{c['id']}")
+
+    def review_comment(self, c):
+        if self.marker in (c.get("body") or "") or not self.state.is_new(f"review:{c['id']}"):
+            return
+        num = c["pull_request_url"].rsplit("/", 1)[-1]
+        where = f"{c.get('path')}:{c.get('line') or c.get('original_line') or '?'}"
+        emit(f"NEW_REVIEW_COMMENT #{num} by {c['user']['login']} (id {c['id']}) {where}: {one_line(c['body'])}")
+        self.state.save()
+        self.eyes(f"pulls/comments/{c['id']}")
+
+    def commit(self, branch, sha, author, message, quiet=False):
+        if not self.state.is_new(f"commit:{sha}") or quiet:
+            return
+        emit(f"NEW_COMMIT {branch} {sha[:7]} by {author}: {one_line(message.splitlines()[0] if message else '')}")
+        self.state.save()
+
+    def event(self, kind, payload):
+        """Report straight from a webhook delivery, without waiting for the API to catch up."""
+        action = payload.get("action")
+        if kind == "issues" and action in ("opened", "reopened", "transferred"):
+            self.issue(payload["issue"])
+        elif kind == "issue_comment" and action == "created":
+            self.comment(payload["comment"], payload["issue"]["state"])
+        elif kind == "pull_request_review_comment" and action == "created":
+            self.review_comment(payload["comment"])
+        elif kind == "push":
+            branch = payload.get("ref", "").replace("refs/heads/", "", 1)
+            if branch in self.branches:
+                for c in payload.get("commits") or []:
+                    a = c.get("author") or {}
+                    self.commit(branch, c["id"], a.get("username") or a.get("name") or "?", c.get("message"))
+
     def check(self):
         started = iso(datetime.now(timezone.utc) - timedelta(seconds=5))
 
         issues = self.get("issues", "issues", "state=all&sort=updated&direction=asc")
         for i in issues or []:
-            if "pull_request" in i or not self.state.is_new(f"issue:{i['number']}"):
-                continue
-            self.eyes(f"issues/{i['number']}")
-            emit(f"NEW_ISSUE #{i['number']} [{i['state']}] by {i['user']['login']}: {one_line(i['title'])}")
+            self.issue(i)
         self.advance("issues", issues, started)
 
         comments = self.get("comments", "issues/comments", "sort=updated&direction=asc")
         for c in comments or []:
-            if self.marker in (c.get("body") or "") or not self.state.is_new(f"comment:{c['id']}"):
-                continue
-            num = c["issue_url"].rsplit("/", 1)[-1]
-            self.eyes(f"issues/comments/{c['id']}")
-            state = gh("api", f"repos/{self.repo}/issues/{num}", "--jq", ".state").stdout.strip() or "?"
-            emit(f"NEW_COMMENT #{num} [{state}] by {c['user']['login']} (id {c['id']}): {one_line(c['body'])}")
+            self.comment(c)
         self.advance("comments", comments, started)
 
         reviews = self.get("review_comments", "pulls/comments", "sort=updated&direction=asc")
         for c in reviews or []:
-            if self.marker in (c.get("body") or "") or not self.state.is_new(f"review:{c['id']}"):
-                continue
-            num = c["pull_request_url"].rsplit("/", 1)[-1]
-            where = f"{c.get('path')}:{c.get('line') or c.get('original_line') or '?'}"
-            self.eyes(f"pulls/comments/{c['id']}")
-            emit(f"NEW_REVIEW_COMMENT #{num} by {c['user']['login']} (id {c['id']}) {where}: {one_line(c['body'])}")
+            self.review_comment(c)
         self.advance("review_comments", reviews, started)
 
         for branch in self.branches:
             key = f"commits:{branch}"
             commits = self.get(key, "commits", f"sha={branch}")
             for c in reversed(commits or []):
-                # On the very first run, remember existing commits without reporting them.
-                if not self.state.is_new(f"commit:{c['sha']}") or self.state.fresh:
-                    continue
                 author = (c.get("author") or {}).get("login") or c["commit"]["author"]["name"]
-                msg = c["commit"]["message"].splitlines()[0]
-                emit(f"NEW_COMMIT {branch} {c['sha'][:7]} by {author}: {one_line(msg)}")
+                # On the very first run, remember existing commits without reporting them.
+                self.commit(branch, c["sha"], author, c["commit"]["message"], quiet=self.state.fresh)
             self.advance(key, commits, started)
 
         self.state.fresh = False
         self.state.save()
 
 
-def start_webhook(repo, port, kick):
+FORWARDERS = []
+
+
+def stop_forwarders(*_):
+    # SIGINT lets gh delete its temporary repo hook, so the next start doesn't collide with it.
+    for p in list(FORWARDERS):
+        p.send_signal(signal.SIGINT)
+    for p in list(FORWARDERS):
+        try:
+            p.wait(5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    sys.exit(0)
+
+
+def start_webhook(repo, port, inbox):
     if gh("webhook", "--help").returncode != 0:
         log("gh webhook extension not installed (gh extension install cli/gh-webhook); polling only")
         return False
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             self.send_response(200)
             self.end_headers()
-            kick.set()
+            try:
+                inbox.put((self.headers.get("X-GitHub-Event", ""), json.loads(body)))
+            except ValueError:
+                inbox.put(("", {}))  # unreadable: still worth a check
 
         def log_message(self, *a):
             pass
 
+    signal.signal(signal.SIGTERM, stop_forwarders)
+    signal.signal(signal.SIGINT, stop_forwarders)
     server = HTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     def forward():
         while True:
             log(f"forwarding webhooks ({EVENTS}) to 127.0.0.1:{server.server_port}")
-            p = subprocess.run(
+            p = subprocess.Popen(
                 ["gh", "webhook", "forward", f"--repo={repo}", f"--events={EVENTS}",
                  f"--url=http://127.0.0.1:{server.server_port}/"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-            log(f"webhook forward exited ({one_line(p.stderr, 300)}); retrying in 60 s, polling meanwhile")
-            time.sleep(60)
+            FORWARDERS.append(p)
+            err = one_line(p.communicate()[1], 300)
+            FORWARDERS.remove(p)
+            # GitHub keeps a dropped forwarder's hook for a short while; a restart collides with it.
+            delay = 15 if "already exists" in err else 60
+            log(f"webhook forward exited ({err}); retrying in {delay} s, polling meanwhile")
+            time.sleep(delay)
 
     threading.Thread(target=forward, daemon=True).start()
     return True
@@ -230,12 +292,11 @@ def main():
     args.branches = [b for b in args.branches.split(",") if b]
 
     watcher = Watcher(args)
-    kick = threading.Event()
-    pushed = not args.once and not args.no_webhook and start_webhook(args.repo, args.port, kick)
+    inbox = queue.Queue()
+    pushed = not args.once and not args.no_webhook and start_webhook(args.repo, args.port, inbox)
     log(f"watching {args.repo} (commits on {','.join(args.branches) or 'no branch'}); "
         f"{'webhooks + ' if pushed else ''}conditional poll every {args.interval:g} s")
 
-    recheck = False
     while True:
         try:
             watcher.check()
@@ -243,12 +304,17 @@ def main():
             log(f"check failed: {e!r}")
         if args.once:
             return
-        # After a webhook, check again shortly in case the API lagged behind the event.
-        rang = kick.wait(min(args.interval, 5) if recheck else args.interval)
-        recheck = rang
-        if rang:
-            kick.clear()
-            time.sleep(1)
+        # Webhook deliveries are reported as they arrive; the poll catches anything they missed.
+        deadline = time.time() + args.interval
+        while (left := deadline - time.time()) > 0:
+            try:
+                kind, payload = inbox.get(timeout=left)
+            except queue.Empty:
+                break
+            try:
+                watcher.event(kind, payload)
+            except Exception as e:
+                log(f"webhook {kind} failed: {e!r}")
 
 
 if __name__ == "__main__":

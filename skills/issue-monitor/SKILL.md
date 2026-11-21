@@ -14,7 +14,8 @@ Before the first issue, read the project's agent instructions: `CLAUDE.md` / `AG
 ## Start
 
 1. `gh auth status` must show an account with write access to the repo.
-2. Arm a Monitor (max timeout, re-arm on every expiry) on the watcher, from the repo's directory:
+2. **Push events:** if `gh webhook --help` fails, install the extension: `gh extension install cli/gh-webhook`. If you aren't allowed to install it, carry on (the watcher polls instead) and tell the user once how to enable it. Creating the forwarding hook needs admin rights on the repo: when the watcher logs `webhook forward exited (... 403/404 ...)`, keep going on polling and tell the user once (an admin, or `gh auth refresh -s admin:repo_hook`, fixes it). `Hook already exists` right after a restart clears up by itself within a minute.
+3. Arm a Monitor (max timeout, re-arm on every expiry) on the watcher, from the repo's directory:
    `python3 <this skill's dir>/watch.py`
    (pass `owner/repo` to watch another repo, `--branches main,dev` for the commit branches, `--interval N` for the poll period.)
    It prints one line per event and reacts 👀 to every issue and comment it reports:
@@ -22,8 +23,8 @@ Before the first issue, read the project's agent instructions: `CLAUDE.md` / `AG
    - `NEW_COMMENT #N [state] by USER (id ID): body…` (issues and PR conversations)
    - `NEW_REVIEW_COMMENT #N by USER (id ID) path:line: body…` (inline PR review comments)
    - `NEW_COMMIT branch sha by AUTHOR: subject` (the default branch unless `--branches` says otherwise)
-   Status lines go to stderr. When the `gh webhook` extension is installed, GitHub pushes events to the watcher (1–2 s latency); otherwise, or when the forward drops, it polls with conditional requests every 15 s. State (seen ids, ETags) lives in `~/.cache/coding-agents-skills/watch/`; delete the repo's file to replay the last day.
-3. On first start, also run `gh issue list --state open` and take any open issue that has no comment from you yet.
+   Status lines go to stderr. With the `gh webhook` extension, GitHub pushes events to the watcher (1–2 s latency); without it, or while the forward is down, it polls with conditional requests every 15 s. Stop it with SIGINT or SIGTERM so it removes its temporary repo hook. State (seen ids, ETags) lives in `~/.cache/coding-agents-skills/watch/`; delete the repo's file to replay the last day.
+4. On first start, also run `gh issue list --state open` and take any open issue that has no comment from you yet.
 
 Work on one issue at a time, oldest first. Events that arrive meanwhile wait their turn, except comments on the issue in progress, which you read right away. `NEW_COMMIT` lines are context (someone else changed the default branch: rebase your branch before pushing); your own merges show up there too and need nothing.
 
