@@ -9,12 +9,15 @@ Folders come from the command line, or else from config.yaml (next to this scrip
     permission_mode: auto        # optional: unattended sessions need one that doesn't prompt
     claude_args: [--model, opus] # optional: extra arguments for every session
 
-Each session loads the skills straight from this repo (--plugin-dir), so nothing has to be
-installed, and runs in its own tmux session (when tmux is installed) or Terminal window (macOS).
+Before launching, the skill is copied into each project's .claude/skills/issue-monitor (and
+listed in .git/info/exclude so it stays out of the project's git status). A project that already
+has the skill as a link or committed folder keeps its own. Each session runs in its own tmux
+session (when tmux is installed) or Terminal window (macOS).
 
     multi.py                         # folders from config.yaml
     multi.py ~/projects/a ~/projects/b
-    multi.py --dry-run               # print the commands only
+    multi.py --dry-run               # print what would happen, change nothing
+    multi.py --copy-only             # copy the skill into the folders, don't launch
     multi.py --stop                  # stop the tmux sessions (Terminal windows: close them)
 """
 import argparse
@@ -26,8 +29,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-PLUGIN = "coding-agents-skills"
-DEFAULT_PROMPT = f"/{PLUGIN}:issue-monitor"
+SKILL = "issue-monitor"
+DEFAULT_PROMPT = f"/{SKILL}"
 TMUX_PREFIX = "issues-"
 
 
@@ -75,12 +78,43 @@ def load_config(path, required):
         return parse_yaml(f.read())
 
 
+def git(folder, *args):
+    return subprocess.run(["git", "-C", folder, *args], capture_output=True, text=True)
+
+
+def install_skill(folder, dry_run):
+    """Copy the skill into the project. Returns a one-line note on what happened."""
+    rel = os.path.join(".claude", "skills", SKILL)
+    dest = os.path.join(folder, rel)
+    if os.path.islink(dest):
+        return f"skill: {rel} is a link to {os.readlink(dest)}, kept"
+    if git(folder, "ls-files", rel).stdout.strip():
+        return f"skill: {rel} is committed in the project, kept"
+    if dry_run:
+        return f"skill: would copy to {rel}"
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    shutil.copytree(os.path.join(ROOT, "skills", SKILL), dest,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # Keep the copy out of the project's git status without touching its .gitignore.
+    exclude = git(folder, "rev-parse", "--git-path", "info/exclude").stdout.strip()
+    if exclude:
+        exclude = os.path.join(folder, exclude) if not os.path.isabs(exclude) else exclude
+        os.makedirs(os.path.dirname(exclude), exist_ok=True)
+        lines = open(exclude).read().splitlines() if os.path.exists(exclude) else []
+        entry = f"/{rel}/"
+        if entry not in lines:
+            with open(exclude, "a") as f:
+                f.write(("\n" if lines and lines[-1] else "") + entry + "\n")
+    return f"skill: copied to {rel}"
+
+
 def session_name(folder):
     return TMUX_PREFIX + re.sub(r"[^\w-]", "_", os.path.basename(folder.rstrip("/")))
 
 
 def command(folder, args, cfg):
-    cmd = ["claude", "--plugin-dir", ROOT, "--name", f"issues: {os.path.basename(folder)}"]
+    cmd = ["claude", "--name", f"issues: {os.path.basename(folder)}"]
     mode = args.permission_mode or cfg.get("permission_mode")
     if mode:
         cmd += ["--permission-mode", mode]
@@ -89,19 +123,20 @@ def command(folder, args, cfg):
     return cmd
 
 
-def launch(folder, cmd, launcher, dry_run):
+def launch(folder, cmd, launcher, dry_run, note):
     line = f"cd {shlex.quote(folder)} && {shlex.join(cmd)}"
+    print(f"{folder}\n  {note}")
     if launcher == "tmux":
         name = session_name(folder)
         full = ["tmux", "new-session", "-d", "-s", name, "-c", folder, shlex.join(cmd)]
-        print(f"{folder}\n  tmux attach -t {name}\n  {line}")
+        print(f"  tmux attach -t {name}\n  {line}")
         if not dry_run:
             if subprocess.run(["tmux", "has-session", "-t", name], capture_output=True).returncode == 0:
                 print(f"  already running, skipped (multi.py --stop to restart)")
                 return
             subprocess.run(full, check=True)
     else:
-        print(f"{folder}\n  new Terminal window\n  {line}")
+        print(f"  new Terminal window\n  {line}")
         if not dry_run:
             script = f'tell application "Terminal" to do script {applescript_string(line)}'
             subprocess.run(["osascript", "-e", script], check=True, stdout=subprocess.DEVNULL)
@@ -133,7 +168,8 @@ def main():
     p.add_argument("--launcher", choices=["tmux", "terminal"], help="default: tmux if installed, else Terminal (macOS)")
     p.add_argument("--permission-mode", help="claude --permission-mode for every session (overrides the config)")
     p.add_argument("--prompt", help=f"first message of every session (default: {DEFAULT_PROMPT})")
-    p.add_argument("--dry-run", action="store_true", help="print the commands without launching")
+    p.add_argument("--dry-run", action="store_true", help="print what would happen without copying or launching")
+    p.add_argument("--copy-only", action="store_true", help="copy the skill into the folders without launching")
     p.add_argument("--stop", action="store_true", help="stop the tmux sessions this script started")
     args = p.parse_args()
 
@@ -157,10 +193,14 @@ def main():
         if folder in seen:
             continue
         seen.add(folder)
-        if not os.path.isdir(os.path.join(folder, ".git")) and not os.path.isfile(os.path.join(folder, ".git")):
-            print(f"{folder}\n  skipped: not a git repository", file=sys.stderr)
+        if git(folder, "rev-parse", "--show-toplevel").stdout.strip() != os.path.realpath(folder):
+            print(f"{folder}\n  skipped: not the root of a git repository", file=sys.stderr)
             continue
-        launch(folder, command(folder, args, cfg), launcher, args.dry_run)
+        note = install_skill(folder, args.dry_run)
+        if args.copy_only:
+            print(f"{folder}\n  {note}")
+            continue
+        launch(folder, command(folder, args, cfg), launcher, args.dry_run, note)
 
 
 if __name__ == "__main__":

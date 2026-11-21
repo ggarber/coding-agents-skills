@@ -143,13 +143,14 @@ Comments containing `<!-- claude-issue-monitor -->` are skipped. The agent ends 
 
 ## Watching several projects: multi.py
 
-`multi.py` starts one Claude Code session per project folder, each running `issue-monitor`. The sessions load the skills straight from this clone (`--plugin-dir`), so nothing needs to be installed. Python 3.8+, standard library only (PyYAML is used if present).
+`multi.py` starts one Claude Code session per project folder, each running `issue-monitor`. For each folder it first copies the skill into `<folder>/.claude/skills/issue-monitor`, then starts the session with `/issue-monitor`. Python 3.8+, standard library only (PyYAML is used if present).
 
 ```bash
 cp config.example.yaml config.yaml   # then list your folders in it
 ./multi.py                           # folders from config.yaml
 ./multi.py ~/projects/app-one ~/projects/app-two   # or pass them directly
-./multi.py --dry-run                 # print the commands only
+./multi.py --dry-run                 # print what would happen, change nothing
+./multi.py --copy-only               # copy the skill into the folders, don't launch
 ./multi.py --stop                    # stop the tmux sessions
 ```
 
@@ -161,11 +162,12 @@ folders:
   - ~/projects/app-two
 permission_mode: auto          # unattended sessions need a mode that doesn't stop at prompts
 # claude_args: [--model, opus] # extra arguments for every session
-# prompt: /coding-agents-skills:issue-monitor   # first message (the default)
+# prompt: /issue-monitor        # first message (the default)
 ```
 
+- **The copy:** every run refreshes it from this clone, so `git pull` here and re-run to update the projects. The copy is listed in the project's `.git/info/exclude`, so it never shows up in `git status` or gets committed. A project that already has the skill as a symlink or a committed folder keeps its own (it's skipped).
 - Each session runs in its own tmux session (`tmux attach -t issues-<folder>`) when tmux is installed, otherwise in a new Terminal window (macOS).
-- Folders that aren't git repositories are skipped. Run one session per GitHub repo: GitHub allows one webhook forwarder per repo.
+- Folders that aren't the root of a git repository are skipped. Run one session per GitHub repo: GitHub allows one webhook forwarder per repo.
 - Without `permission_mode`, each session waits for you to approve its commands. Pick the mode you're comfortable leaving unattended. The skill still never deploys or merges red, but the agent pushes branches and merges PRs on its own.
 - Closing a window or `--stop` ends the session, and the watcher removes its temporary webhook on the way out.
 
