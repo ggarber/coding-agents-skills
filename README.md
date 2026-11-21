@@ -4,20 +4,45 @@ Reusable skills for coding agents (Claude Code and others that read `SKILL.md` s
 
 | Skill | What it does |
 | --- | --- |
-| [`issue-monitor`](skills/issue-monitor/SKILL.md) | Watches a GitHub repo, turns each new issue into a tested, merged PR, and keeps answering comments. Events are pushed to the machine through GitHub webhooks, with cheap polling as a fallback. |
+| [`issue-monitor`](skills/issue-monitor/SKILL.md) | Watches a GitHub repo, turns each new issue into a tested, merged PR, and keeps answering comments. Events are pushed to the machine through GitHub webhooks, with cheap polling as a fallback. [`multi.py`](#watching-several-projects-multipy) runs it on several projects at once. |
 
 ## Install
 
-Claude Code loads skills from two places:
+### From GitHub, as a Claude Code plugin (recommended)
+
+The repo is a Claude Code plugin marketplace, so Claude Code can install it straight from GitHub. There's nothing to clone or copy. In a Claude Code session:
+
+```
+/plugin install coding-agents-skills --marketplace ggarber/coding-agents-skills
+```
+
+Or from a shell (pick the scope):
+
+```bash
+claude plugin marketplace add ggarber/coding-agents-skills
+claude plugin install coding-agents-skills@coding-agents-skills --scope user     # the whole computer
+claude plugin install coding-agents-skills@coding-agents-skills --scope project  # this project, committed in .claude/settings.json
+claude plugin install coding-agents-skills@coding-agents-skills --scope local    # this project, just you
+```
+
+Plugin skills are namespaced: run `/coding-agents-skills:issue-monitor`, or just ask ("monitor the GitHub issues").
+
+- **Updates:** `claude plugin marketplace update coding-agents-skills && claude plugin update coding-agents-skills@coding-agents-skills`, or turn on auto-update for the marketplace in `/plugin` → Marketplaces. The plugin has no pinned `version`, so every new commit is an update.
+- **Teammates (project scope):** the committed `.claude/settings.json` declares the marketplace and enables the plugin. Each teammate still runs the `claude plugin install ... --scope project` line once per clone.
+- **Remove:** `claude plugin uninstall coding-agents-skills@coding-agents-skills`.
+
+### Without the plugin system
+
+Claude Code also loads skills from plain folders:
 
 | Where | Path | Who gets it |
 | --- | --- | --- |
 | The whole computer | `~/.claude/skills/<name>/` | You, in every project |
 | One project | `<project>/.claude/skills/<name>/` | Everyone who works on that project |
 
-A skill is just its folder (`SKILL.md` plus scripts), so installing means putting that folder, or a link to it, in one of those paths. Start a new Claude Code session afterwards. The skill shows up in `/skills`, and you can call it by name (`/issue-monitor`) or just ask for it ("monitor the issues").
+A skill is just its folder (`SKILL.md` plus scripts), so installing means putting that folder, or a link to it, in one of those paths. Start a new Claude Code session afterwards. The skill shows up in `/skills`, and you can call it by name (`/issue-monitor`) or just ask for it.
 
-### On the whole computer
+#### On the whole computer
 
 Clone once and link the skills, so a `git pull` updates them everywhere:
 
@@ -34,7 +59,7 @@ for d in ~/projects/coding-agents-skills/skills/*/; do ln -sfn "$d" ~/.claude/sk
 
 Update: `git -C ~/projects/coding-agents-skills pull`.
 
-### In one project, shared through its repo
+#### In one project, shared through its repo
 
 Add this repo as a git submodule and link the skill into `.claude/skills`. The link and the submodule are committed, so anyone who clones the project gets the skill at the version you pinned:
 
@@ -50,7 +75,7 @@ git add .gitmodules .claude && git commit -m "chore: add issue-monitor skill"
 - Updating to the latest skills: `git submodule update --remote .claude/vendor/coding-agents-skills`, then commit the new submodule commit.
 - Add the project's own rules for the skill in `.claude/<name>.md` (see below).
 
-### In one project, as a plain copy
+#### In one project, as a plain copy
 
 No submodule, no link: copy the folder in and commit it. It won't update by itself; copy it again to update.
 
@@ -59,7 +84,7 @@ mkdir -p <project>/.claude/skills
 cp -R ~/projects/coding-agents-skills/skills/issue-monitor <project>/.claude/skills/
 ```
 
-### Check and remove
+#### Check and remove
 
 ```bash
 ls -l ~/.claude/skills/ <project>/.claude/skills/    # what's installed and where links point
@@ -67,7 +92,7 @@ python3 ~/.claude/skills/issue-monitor/watch.py --help # the skill's scripts run
 rm ~/.claude/skills/issue-monitor                      # remove a linked skill (the clone stays)
 ```
 
-Install a skill in one place only. With the same skill both on the computer and in a project, it's unclear which copy the agent uses.
+Install a skill in one place only. With the same skill both on the computer and in a project, or both as a plugin and as a folder, it's unclear which copy the agent uses.
 
 ### Other agents
 
@@ -116,12 +141,40 @@ It prints one line per event on stdout (`NEW_ISSUE`, `NEW_COMMENT`, `NEW_REVIEW_
 
 Comments containing `<!-- claude-issue-monitor -->` are skipped. The agent ends all of its comments with that marker, so it never answers itself when it posts from the owner's account. Change it with `--marker`.
 
+## Watching several projects: multi.py
+
+`multi.py` starts one Claude Code session per project folder, each running `issue-monitor`. The sessions load the skills straight from this clone (`--plugin-dir`), so nothing needs to be installed. Python 3.8+, standard library only (PyYAML is used if present).
+
+```bash
+cp config.example.yaml config.yaml   # then list your folders in it
+./multi.py                           # folders from config.yaml
+./multi.py ~/projects/app-one ~/projects/app-two   # or pass them directly
+./multi.py --dry-run                 # print the commands only
+./multi.py --stop                    # stop the tmux sessions
+```
+
+`config.yaml` (ignored by git):
+
+```yaml
+folders:
+  - ~/projects/app-one
+  - ~/projects/app-two
+permission_mode: auto          # unattended sessions need a mode that doesn't stop at prompts
+# claude_args: [--model, opus] # extra arguments for every session
+# prompt: /coding-agents-skills:issue-monitor   # first message (the default)
+```
+
+- Each session runs in its own tmux session (`tmux attach -t issues-<folder>`) when tmux is installed, otherwise in a new Terminal window (macOS).
+- Folders that aren't git repositories are skipped. Run one session per GitHub repo: GitHub allows one webhook forwarder per repo.
+- Without `permission_mode`, each session waits for you to approve its commands. Pick the mode you're comfortable leaving unattended. The skill still never deploys or merges red, but the agent pushes branches and merges PRs on its own.
+- Closing a window or `--stop` ends the session, and the watcher removes its temporary webhook on the way out.
+
 ## Adding a skill
 
-1. `skills/<name>/SKILL.md` with `name` and `description` front matter. The description says when to use the skill.
+1. `skills/<name>/SKILL.md` with `name` and `description` front matter. The description says when to use the skill. Refer to bundled scripts as `${CLAUDE_SKILL_DIR}/<script>`, which works for plugin and folder installs alike.
 2. Keep it generic: read project rules from the project (`CLAUDE.md`, `AGENTS.md`, `.claude/<name>.md`) instead of hard-coding them.
 3. Scripts next to `SKILL.md`, standard library only where possible, with `--help`.
-4. Add a row to the table above.
+4. Add a row to the table above, and check the plugin with `claude plugin validate .`.
 
 ## License
 

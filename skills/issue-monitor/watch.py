@@ -248,6 +248,7 @@ def start_webhook(repo, port, inbox):
 
     signal.signal(signal.SIGTERM, stop_forwarders)
     signal.signal(signal.SIGINT, stop_forwarders)
+    signal.signal(signal.SIGHUP, stop_forwarders)  # terminal window or tmux session closed
     server = HTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 

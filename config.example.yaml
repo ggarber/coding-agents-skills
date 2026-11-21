@@ -1,0 +1,12 @@
+# Copy to config.yaml (ignored by git) and list your project folders.
+# multi.py starts one Claude Code session per folder, each running the issue-monitor skill.
+folders:
+  - ~/projects/app-one
+  - ~/projects/app-two
+
+# Unattended sessions need a mode that doesn't stop at permission prompts
+# (auto, acceptEdits, dontAsk, bypassPermissions, ...). Leave it out to approve by hand.
+permission_mode: auto
+
+# Optional: extra arguments for every claude session.
+# claude_args: [--model, opus]
