@@ -1,0 +1,10 @@
+{
+  "name": "coding-agents-skills",
+  "description": "Reusable skills for coding agents: issue-monitor (GitHub issues to merged PRs, with webhook push)",
+  "repository": "https://github.com/ggarber/coding-agents-skills",
+  "license": "MIT",
+  "author": {
+    "name": "Gustavo Garcia",
+    "url": "https://github.com/ggarber"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "coding-agents-skills",
+  "description": "Reusable skills for coding agents",
+  "owner": { "name": "Gustavo Garcia" },
+  "plugins": [
+    {
+      "name": "coding-agents-skills",
+      "source": "./",
+      "description": "Reusable skills for coding agents: issue-monitor (GitHub issues to merged PRs, with webhook push)"
+    }
+  ]
+}

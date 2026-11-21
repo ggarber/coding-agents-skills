@@ -16,7 +16,7 @@ Before the first issue, read the project's agent instructions: `CLAUDE.md` / `AG
 1. `gh auth status` must show an account with write access to the repo.
 2. **Push events:** if `gh webhook --help` fails, install the extension: `gh extension install cli/gh-webhook`. If you aren't allowed to install it, carry on (the watcher polls instead) and tell the user once how to enable it. Creating the forwarding hook needs admin rights on the repo: when the watcher logs `webhook forward exited (... 403/404 ...)`, keep going on polling and tell the user once (an admin, or `gh auth refresh -s admin:repo_hook`, fixes it). `Hook already exists` right after a restart clears up by itself within a minute.
 3. Arm a Monitor (max timeout, re-arm on every expiry) on the watcher, from the repo's directory:
-   `python3 <this skill's dir>/watch.py`
+   `python3 ${CLAUDE_SKILL_DIR}/watch.py`
    (pass `owner/repo` to watch another repo, `--branches main,dev` for the commit branches, `--interval N` for the poll period.)
    It prints one line per event and reacts 👀 to every issue and comment it reports:
    - `NEW_ISSUE #N [state] by USER: title`
