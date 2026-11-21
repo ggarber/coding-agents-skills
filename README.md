@@ -8,30 +8,70 @@ Reusable skills for coding agents (Claude Code and others that read `SKILL.md` s
 
 ## Install
 
-Clone once, then link the skills where your agent looks for them.
+Claude Code loads skills from two places:
+
+| Where | Path | Who gets it |
+| --- | --- | --- |
+| The whole computer | `~/.claude/skills/<name>/` | You, in every project |
+| One project | `<project>/.claude/skills/<name>/` | Everyone who works on that project |
+
+A skill is just its folder (`SKILL.md` plus scripts), so installing means putting that folder, or a link to it, in one of those paths. Start a new Claude Code session afterwards. The skill shows up in `/skills`, and you can call it by name (`/issue-monitor`) or just ask for it ("monitor the issues").
+
+### On the whole computer
+
+Clone once and link the skills, so a `git pull` updates them everywhere:
 
 ```bash
 git clone https://github.com/ggarber/coding-agents-skills.git ~/projects/coding-agents-skills
-```
-
-**For all your projects** (Claude Code user skills):
-
-```bash
 mkdir -p ~/.claude/skills
+
+# one skill
 ln -s ~/projects/coding-agents-skills/skills/issue-monitor ~/.claude/skills/issue-monitor
+
+# or every skill in the repo (re-run after pulling new skills)
+for d in ~/projects/coding-agents-skills/skills/*/; do ln -sfn "$d" ~/.claude/skills/"$(basename "$d")"; done
 ```
 
-**For one project**, so everyone who clones it gets the skill, add this repo as a submodule and link the skill:
+Update: `git -C ~/projects/coding-agents-skills pull`.
+
+### In one project, shared through its repo
+
+Add this repo as a git submodule and link the skill into `.claude/skills`. The link and the submodule are committed, so anyone who clones the project gets the skill at the version you pinned:
 
 ```bash
+cd <project>
 git submodule add https://github.com/ggarber/coding-agents-skills.git .claude/vendor/coding-agents-skills
 mkdir -p .claude/skills
 ln -s ../vendor/coding-agents-skills/skills/issue-monitor .claude/skills/issue-monitor
+git add .gitmodules .claude && git commit -m "chore: add issue-monitor skill"
 ```
 
-Update with `git pull` in the clone (or `git submodule update --remote`). The symlinks keep pointing at the latest version.
+- Cloning the project: `git clone --recurse-submodules <url>`, or `git submodule update --init` in an existing clone. Without it the link points at an empty folder and the skill doesn't load.
+- Updating to the latest skills: `git submodule update --remote .claude/vendor/coding-agents-skills`, then commit the new submodule commit.
+- Add the project's own rules for the skill in `.claude/<name>.md` (see below).
 
-Other agents: point them at `skills/<name>/SKILL.md` (for example from your `AGENTS.md`).
+### In one project, as a plain copy
+
+No submodule, no link: copy the folder in and commit it. It won't update by itself; copy it again to update.
+
+```bash
+mkdir -p <project>/.claude/skills
+cp -R ~/projects/coding-agents-skills/skills/issue-monitor <project>/.claude/skills/
+```
+
+### Check and remove
+
+```bash
+ls -l ~/.claude/skills/ <project>/.claude/skills/    # what's installed and where links point
+python3 ~/.claude/skills/issue-monitor/watch.py --help # the skill's scripts run from there
+rm ~/.claude/skills/issue-monitor                      # remove a linked skill (the clone stays)
+```
+
+Install a skill in one place only. With the same skill both on the computer and in a project, it's unclear which copy the agent uses.
+
+### Other agents
+
+Agents that don't load `SKILL.md` skills can still follow them: point them at `skills/<name>/SKILL.md` from the project's `AGENTS.md` (or equivalent), for example "To work GitHub issues, follow `.claude/vendor/coding-agents-skills/skills/issue-monitor/SKILL.md`."
 
 ## Project-specific rules
 
